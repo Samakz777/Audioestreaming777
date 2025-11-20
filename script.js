@@ -1,5 +1,6 @@
 /* script.js
    Cliente WebSocket -> AudioWorklet player
+   Agora com suporte WSS automático
    Assumimos: Int16 little-endian interleaved PCM, 48kHz, 2 canais
 */
 
@@ -16,7 +17,10 @@ let ws = null;
 let workletNode = null;
 let processorReady = false;
 
-// create and register AudioWorklet from a Blob (so só precisa deste arquivo)
+//=====================================================================
+// AudioWorklet
+//=====================================================================
+
 async function loadWorklet() {
   if (!audioCtx) return;
   if (audioCtx.audioWorklet) {
@@ -29,7 +33,6 @@ async function loadWorklet() {
         this.channelCount = 2;
         this.port.onmessage = (e) => {
           if (e.data && e.data.samples) {
-            // samples is Float32Array
             this.buffer.push(e.data.samples);
           } else if (e.data === 'clear') {
             this.buffer = [];
@@ -39,23 +42,17 @@ async function loadWorklet() {
       process(inputs, outputs) {
         const output = outputs[0];
         const chCount = output.length;
-        const frameSize = output[0].length; // 128 usually
+        const frameSize = output[0].length;
 
-        // zero-fill if no data
         if (this.buffer.length === 0) {
-          for (let ch=0; ch<chCount; ch++) {
-            output[ch].fill(0);
-          }
+          for (let ch=0; ch<chCount; ch++) output[ch].fill(0);
           return true;
         }
 
-        // fill output from buffers
-        let samplesNeeded = frameSize * chCount;
         let outIndex = 0;
 
         while (outIndex < frameSize) {
           if (this.buffer.length === 0) {
-            // leftover - zero fill remainder
             for (let ch=0; ch<chCount; ch++) {
               for (let i=outIndex;i<frameSize;i++) output[ch][i] = 0;
             }
@@ -75,7 +72,6 @@ async function loadWorklet() {
           this.readIndex += toCopy;
           outIndex += toCopy;
 
-          // consumed chunk?
           if (this.readIndex >= chunkFrames) {
             this.buffer.shift();
             this.readIndex = 0;
@@ -102,36 +98,42 @@ function drawVUMeter(level){
   const w = canvas.width;
   const h = canvas.height;
   ctx.clearRect(0,0,w,h);
-  // background
+
   ctx.fillStyle = 'rgba(255,255,255,0.03)';
   ctx.fillRect(0,0,w,h);
-  // level
+
   const fillW = Math.max(2, Math.min(w, w * Math.pow(level,0.5)));
   const grad = ctx.createLinearGradient(0,0,fillW,0);
   grad.addColorStop(0,'#6ee7b7');
   grad.addColorStop(1,'#60a5fa');
   ctx.fillStyle = grad;
   ctx.fillRect(0,0, fillW, h);
-  // border
+
   ctx.strokeStyle = 'rgba(255,255,255,0.06)';
   ctx.strokeRect(0,0,w,h);
 }
 
 async function startAudio() {
   if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000, latencyHint: 'interactive' });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+      sampleRate: 48000,
+      latencyHint: 'interactive'
+    });
     await loadWorklet();
   }
-  // create node
+
   if (!workletNode) {
-    workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor', { numberOfOutputs:1, outputChannelCount:[2]});
+    workletNode = new AudioWorkletNode(
+      audioCtx,
+      'pcm-processor',
+      { numberOfOutputs:1, outputChannelCount:[2] }
+    );
     workletNode.connect(audioCtx.destination);
     processorReady = true;
   }
 }
 
 function floatFromInt16Buffer(bufInt16) {
-  // bufInt16: Int16Array
   const float32 = new Float32Array(bufInt16.length);
   for (let i=0;i<bufInt16.length;i++){
     float32[i] = bufInt16[i] / 32768;
@@ -141,17 +143,33 @@ function floatFromInt16Buffer(bufInt16) {
 
 function computeRMS(float32) {
   let sum = 0;
-  for (let i=0;i<float32.length;i+=2){ // sample every stereo pair
+  for (let i=0;i<float32.length;i+=2){
     const v = 0.5*(float32[i] + (float32[i+1]||0));
     sum += v*v;
   }
   return Math.sqrt(sum / (float32.length/2));
 }
 
+//=====================================================================
+//  CONEXÃO (AGORA COM WSS AUTOMÁTICO)
+//=====================================================================
+
 connectBtn.addEventListener('click', async () => {
-  const url = wsInput.value.trim();
-  if (!url) return alert('Informe o ws://192.168.100.6:8080 do PC');
+  let url = wsInput.value.trim();
+  if (!url) return alert('Informe wss://SEU_IP:8080');
+
+  // Convert ws:// → wss:// automaticamente
+  if (url.startsWith("ws://")) {
+    url = url.replace("ws://", "wss://");
+    wsInput.value = url;
+  }
+
+  if (!url.startsWith("wss://")) {
+    return alert("A conexão deve ser wss:// (segura)");
+  }
+
   setStatus('Conectando...');
+
   try {
     await startAudio();
     if (audioCtx.state === 'suspended') {
@@ -167,20 +185,19 @@ connectBtn.addEventListener('click', async () => {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    setStatus('Conectado — aguardando áudio');
+    setStatus('Conectado (WSS) — aguardando áudio');
     connectBtn.disabled = true;
     disconnectBtn.disabled = false;
   };
 
   ws.onmessage = (evt) => {
-    // evt.data is ArrayBuffer with Int16 PCM LE (interleaved stereo)
     const arr = new Int16Array(evt.data);
     const float32 = floatFromInt16Buffer(arr);
-    // send to audio worklet as transferable Float32Array.buffer to avoid copy
+
     if (workletNode && processorReady) {
       workletNode.port.postMessage({ samples: float32 }, [float32.buffer]);
     }
-    // VU meter
+
     const rms = computeRMS(float32);
     drawVUMeter(rms);
   };
@@ -192,22 +209,24 @@ connectBtn.addEventListener('click', async () => {
   };
 
   ws.onerror = (err) => {
-    console.error('WS error', err);
-    setStatus('Erro de WebSocket', false);
+    console.error('WS/WSS error', err);
+    setStatus('Erro de WebSocket (verifique certificado/HTTPS)', false);
   };
 });
 
 disconnectBtn.addEventListener('click', () => {
   if (ws) ws.close();
-  if (workletNode) {
-    workletNode.port.postMessage('clear');
-  }
+  if (workletNode) workletNode.port.postMessage('clear');
+
   setStatus('Desconectado', false);
   connectBtn.disabled = false;
   disconnectBtn.disabled = true;
 });
 
-// Resize canvas for HiDPI
+//=====================================================================
+// Canvas HiDPI
+//=====================================================================
+
 function resizeCanvas(){
   const dpr = window.devicePixelRatio || 1;
   canvas.width = canvas.clientWidth * dpr;
@@ -216,4 +235,3 @@ function resizeCanvas(){
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
-
