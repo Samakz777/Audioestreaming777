@@ -1,0 +1,35 @@
+body {
+    margin: 0;
+    background: #0d0d0d;
+    color: white;
+    font-family: Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+
+.container {
+    text-align: center;
+    padding: 20px;
+}
+
+button {
+    background: #1e90ff;
+    border: 0;
+    padding: 15px 25px;
+    border-radius: 12px;
+    color: white;
+    font-size: 18px;
+    margin-top: 20px;
+}
+
+button:active {
+    transform: scale(0.97);
+}
+
+.status {
+    margin-top: 10px;
+    font-size: 18px;
+    opacity: 0.8;
+}
