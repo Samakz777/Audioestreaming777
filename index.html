@@ -1,29 +1,47 @@
-<!DOCTYPE html>
-<html lang="pt-br">
+<!doctype html>
+<html lang="pt-BR">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <!-- PWA -->
-    <link rel="manifest" href="manifest.json">
-
-    <!-- Tema do app -->
-    <meta name="theme-color" content="#111">
-
-    <title>AudioStream</title>
-    <link rel="stylesheet" href="style.css">
-
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AudioStream — Receiver</title>
+  <link rel="stylesheet" href="style.css">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
+  <main class="card">
+    <header>
+      <img src="icons/headphones.svg" alt="logo" class="logo">
+      <h1>AudioStream</h1>
+      <p class="subtitle">Áudio do seu PC direto no iPhone — baixa latência</p>
+    </header>
 
-    <div class="container">
-        <h1>AudioStream</h1>
+    <section class="controls">
+      <label for="wsUrl">Servidor WS (ex: ws://192.168.100.6:8080)</label>
+      <input id="wsUrl" type="text" value="ws://SEU_PC:8080" />
 
-        <p class="status" id="status">Desconectado</p>
+      <div class="row">
+        <select id="mode">
+          <option value="game">Baixa latência (Game)</option>
+          <option value="music">Qualidade (Música)</option>
+        </select>
 
-        <button id="connect-btn">Conectar ao PC</button>
-    </div>
+        <button id="connectBtn" class="btn primary">Conectar</button>
+        <button id="disconnectBtn" class="btn" disabled>Desconectar</button>
+      </div>
 
-    <script src="script.js"></script>
+      <div class="status" id="status">Status: Offline</div>
+    </section>
+
+    <section class="visual">
+      <canvas id="vumeter" width="600" height="60"></canvas>
+    </section>
+
+    <footer>
+      <small>Adicione à Tela de Início para reproduzir em segundo plano.</small>
+    </footer>
+  </main>
+
+  <script src="script.js"></script>
 </body>
 </html>
