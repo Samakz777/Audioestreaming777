@@ -150,7 +150,7 @@ function computeRMS(float32) {
 
 connectBtn.addEventListener('click', async () => {
   const url = wsInput.value.trim();
-  if (!url) return alert('Informe o ws://IP:PORT do PC');
+  if (!url) return alert('Informe o ws://192.168.100.6:8080 do PC');
   setStatus('Conectando...');
   try {
     await startAudio();
@@ -216,3 +216,4 @@ function resizeCanvas(){
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
+
