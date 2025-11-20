@@ -1,46 +1,218 @@
-document.getElementById("connect-btn").onclick = () => {
-    const ip = "ws://192.168.100.6:8080";
+/* script.js
+   Cliente WebSocket -> AudioWorklet player
+   Assumimos: Int16 little-endian interleaved PCM, 48kHz, 2 canais
+*/
 
-    const ws = new WebSocket(ip);
-    ws.binaryType = "arraybuffer";
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const wsInput = document.getElementById('wsUrl');
+const statusEl = document.getElementById('status');
+const modeSel = document.getElementById('mode');
+const canvas = document.getElementById('vumeter');
+const ctx = canvas.getContext('2d');
 
-    const status = document.getElementById("status");
+let audioCtx = null;
+let ws = null;
+let workletNode = null;
+let processorReady = false;
 
-    let audioCtx = new AudioContext({ latencyHint: "interactive" });
-    let queue = [];
+// create and register AudioWorklet from a Blob (so só precisa deste arquivo)
+async function loadWorklet() {
+  if (!audioCtx) return;
+  if (audioCtx.audioWorklet) {
+    const workletCode = `
+    class PCMProcessor extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this.buffer = [];
+        this.readIndex = 0;
+        this.channelCount = 2;
+        this.port.onmessage = (e) => {
+          if (e.data && e.data.samples) {
+            // samples is Float32Array
+            this.buffer.push(e.data.samples);
+          } else if (e.data === 'clear') {
+            this.buffer = [];
+          }
+        };
+      }
+      process(inputs, outputs) {
+        const output = outputs[0];
+        const chCount = output.length;
+        const frameSize = output[0].length; // 128 usually
 
-    ws.onopen = () => {
-        status.innerText = "Conectado";
-        status.style.color = "#00ff7f";
-    };
-
-    ws.onmessage = (event) => {
-        queue.push(event.data);
-        play();
-    };
-
-    function play() {
-        if (queue.length === 0) return;
-
-        let data = queue.shift();
-        let floatData = convertPCM16ToFloat32(new Int16Array(data));
-
-        let buffer = audioCtx.createBuffer(2, floatData.length / 2, 48000);
-
-        buffer.getChannelData(0).set(floatData.filter((v, i) => i % 2 === 0));
-        buffer.getChannelData(1).set(floatData.filter((v, i) => i % 2 === 1));
-
-        let src = audioCtx.createBufferSource();
-        src.buffer = buffer;
-        src.connect(audioCtx.destination);
-        src.start();
-    }
-
-    function convertPCM16ToFloat32(input) {
-        let output = new Float32Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-            output[i] = input[i] / 32768;
+        // zero-fill if no data
+        if (this.buffer.length === 0) {
+          for (let ch=0; ch<chCount; ch++) {
+            output[ch].fill(0);
+          }
+          return true;
         }
-        return output;
+
+        // fill output from buffers
+        let samplesNeeded = frameSize * chCount;
+        let outIndex = 0;
+
+        while (outIndex < frameSize) {
+          if (this.buffer.length === 0) {
+            // leftover - zero fill remainder
+            for (let ch=0; ch<chCount; ch++) {
+              for (let i=outIndex;i<frameSize;i++) output[ch][i] = 0;
+            }
+            break;
+          }
+          const chunk = this.buffer[0];
+          const chunkFrames = chunk.length / chCount;
+          const available = chunkFrames - this.readIndex;
+          const toCopy = Math.min(frameSize - outIndex, available);
+
+          for (let f=0; f<toCopy; f++) {
+            for (let ch=0; ch<chCount; ch++) {
+              output[ch][outIndex + f] = chunk[(this.readIndex + f) * chCount + ch];
+            }
+          }
+
+          this.readIndex += toCopy;
+          outIndex += toCopy;
+
+          // consumed chunk?
+          if (this.readIndex >= chunkFrames) {
+            this.buffer.shift();
+            this.readIndex = 0;
+          }
+        }
+        return true;
+      }
     }
-};
+    registerProcessor('pcm-processor', PCMProcessor);
+    `;
+    const blob = new Blob([workletCode], {type:'application/javascript'});
+    const url = URL.createObjectURL(blob);
+    await audioCtx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+  }
+}
+
+function setStatus(txt, ok=true){
+  statusEl.textContent = 'Status: ' + txt;
+  statusEl.style.color = ok ? '#9ee7c2' : '#ffb4b4';
+}
+
+function drawVUMeter(level){
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0,0,w,h);
+  // background
+  ctx.fillStyle = 'rgba(255,255,255,0.03)';
+  ctx.fillRect(0,0,w,h);
+  // level
+  const fillW = Math.max(2, Math.min(w, w * Math.pow(level,0.5)));
+  const grad = ctx.createLinearGradient(0,0,fillW,0);
+  grad.addColorStop(0,'#6ee7b7');
+  grad.addColorStop(1,'#60a5fa');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0, fillW, h);
+  // border
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.strokeRect(0,0,w,h);
+}
+
+async function startAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000, latencyHint: 'interactive' });
+    await loadWorklet();
+  }
+  // create node
+  if (!workletNode) {
+    workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor', { numberOfOutputs:1, outputChannelCount:[2]});
+    workletNode.connect(audioCtx.destination);
+    processorReady = true;
+  }
+}
+
+function floatFromInt16Buffer(bufInt16) {
+  // bufInt16: Int16Array
+  const float32 = new Float32Array(bufInt16.length);
+  for (let i=0;i<bufInt16.length;i++){
+    float32[i] = bufInt16[i] / 32768;
+  }
+  return float32;
+}
+
+function computeRMS(float32) {
+  let sum = 0;
+  for (let i=0;i<float32.length;i+=2){ // sample every stereo pair
+    const v = 0.5*(float32[i] + (float32[i+1]||0));
+    sum += v*v;
+  }
+  return Math.sqrt(sum / (float32.length/2));
+}
+
+connectBtn.addEventListener('click', async () => {
+  const url = wsInput.value.trim();
+  if (!url) return alert('Informe o ws://IP:PORT do PC');
+  setStatus('Conectando...');
+  try {
+    await startAudio();
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+  } catch (e){
+    console.error(e);
+    setStatus('Erro ao inicializar áudio', false);
+    return;
+  }
+
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStatus('Conectado — aguardando áudio');
+    connectBtn.disabled = true;
+    disconnectBtn.disabled = false;
+  };
+
+  ws.onmessage = (evt) => {
+    // evt.data is ArrayBuffer with Int16 PCM LE (interleaved stereo)
+    const arr = new Int16Array(evt.data);
+    const float32 = floatFromInt16Buffer(arr);
+    // send to audio worklet as transferable Float32Array.buffer to avoid copy
+    if (workletNode && processorReady) {
+      workletNode.port.postMessage({ samples: float32 }, [float32.buffer]);
+    }
+    // VU meter
+    const rms = computeRMS(float32);
+    drawVUMeter(rms);
+  };
+
+  ws.onclose = () => {
+    setStatus('Conexão fechada', false);
+    connectBtn.disabled = false;
+    disconnectBtn.disabled = true;
+  };
+
+  ws.onerror = (err) => {
+    console.error('WS error', err);
+    setStatus('Erro de WebSocket', false);
+  };
+});
+
+disconnectBtn.addEventListener('click', () => {
+  if (ws) ws.close();
+  if (workletNode) {
+    workletNode.port.postMessage('clear');
+  }
+  setStatus('Desconectado', false);
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+});
+
+// Resize canvas for HiDPI
+function resizeCanvas(){
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
